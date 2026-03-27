@@ -1,6 +1,6 @@
 services:
   voice:
-    image: ghcr.io/wentbackward/clone-tts-service:cuda
+    image: ghcr.io/wentbackward/clone-voice-service:cuda
     build:
       context: .
       args:

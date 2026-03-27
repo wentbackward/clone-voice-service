@@ -8,8 +8,8 @@ on:
     branches: [main]
 
 env:
-  GHCR_IMAGE: ghcr.io/wentbackward/clone-tts-service
-  DOCKERHUB_IMAGE: wentbackward/clone-tts-service
+  GHCR_IMAGE: ghcr.io/wentbackward/clone-voice-service
+  DOCKERHUB_IMAGE: wentbackward/clone-voice-service
 
 jobs:
   build-cuda:

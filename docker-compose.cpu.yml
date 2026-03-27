@@ -1,7 +1,7 @@
 # CPU-only override: docker compose -f docker-compose.yml -f docker-compose.cpu.yml up
 services:
   voice:
-    image: ghcr.io/wentbackward/clone-tts-service:cpu
+    image: ghcr.io/wentbackward/clone-voice-service:cpu
     build:
       args:
         BASE_IMAGE: python:3.12-slim

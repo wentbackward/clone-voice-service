@@ -1,7 +1,7 @@
-# clone-tts-service
+# clone-voice-service
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)](https://github.com/wentbackward/clone-tts-service/pkgs/container/clone-tts-service)
+[![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)](https://github.com/wentbackward/clone-voice-service/pkgs/container/clone-voice-service)
 [![Platform](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey)]()
 [![GPU](https://img.shields.io/badge/GPU-CUDA%20%7C%20CPU-green?logo=nvidia)]()
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue?logo=python)](https://python.org)
@@ -25,8 +25,8 @@ Voice cloning TTS + speech-to-text in a single, self-contained API. Powered by [
 ## Quick Start
 
 ```bash
-git clone https://github.com/wentbackward/clone-tts-service.git
-cd clone-tts-service
+git clone https://github.com/wentbackward/clone-voice-service.git
+cd clone-voice-service
 ./start.sh
 ```
 
@@ -46,14 +46,14 @@ docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 
 | Tag | Platform | GPU | Use case |
 |-----|----------|-----|----------|
-| `ghcr.io/wentbackward/clone-tts-service:cuda` | amd64 | NVIDIA CUDA | Desktops, servers, WSL |
-| `ghcr.io/wentbackward/clone-tts-service:cpu` | amd64, arm64 | None | Raspberry Pi, any system |
-| `ghcr.io/wentbackward/clone-tts-service:cpu-arm64` | arm64 | None | Raspberry Pi |
-| `ghcr.io/wentbackward/clone-tts-service:cpu-amd64` | amd64 | None | x86 without GPU |
+| `ghcr.io/wentbackward/clone-voice-service:cuda` | amd64 | NVIDIA CUDA | Desktops, servers, WSL |
+| `ghcr.io/wentbackward/clone-voice-service:cpu` | amd64, arm64 | None | Raspberry Pi, any system |
+| `ghcr.io/wentbackward/clone-voice-service:cpu-arm64` | arm64 | None | Raspberry Pi |
+| `ghcr.io/wentbackward/clone-voice-service:cpu-amd64` | amd64 | None | x86 without GPU |
 
 For **NVIDIA arm64** (DGX Spark, Jetson): build locally with `Dockerfile.spark` — see [ARM64 CUDA](#arm64-cuda-dgx-spark-jetson) below.
 
-Also available on Docker Hub: `wentbackward/clone-tts-service`
+Also available on Docker Hub: `wentbackward/clone-voice-service`
 
 ### ARM64 CUDA (DGX Spark, Jetson)
 
