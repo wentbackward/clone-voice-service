@@ -106,14 +106,26 @@ curl -X POST http://localhost:3030/v1/audio/speech \
   -o output.opus
 ```
 
-**OpenClaw config:**
+**OpenClaw config** — add this to your OpenClaw `settings.json` under `messages`:
+
 ```json
-"openai": {
-  "baseUrl": "http://spark-01:3030/v1",
-  "apiKey": "not-needed",
-  "model": "tts-1"
+{
+  "messages": {
+    "tts": {
+      "auto": "inbound",
+      "provider": "openai",
+      "openai": {
+        "baseUrl": "http://localhost:3030/v1",
+        "apiKey": "not-needed",
+        "model": "tts-1"
+      },
+      "maxTextLength": 4000
+    }
+  }
 }
 ```
+
+Set `baseUrl` to wherever your clone-voice-service is running (e.g. `http://spark-01:3030/v1`). The `voice` field defaults to `"paul"` — to use a different voice, configure it in OpenClaw's voice settings.
 
 See [SKILL.md](SKILL.md) for the full API reference.
 
