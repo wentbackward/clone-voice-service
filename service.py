@@ -232,10 +232,13 @@ async def openai_tts(req: OpenAISpeechRequest):
     import asyncio
 
     voices = discover_voices()
-    if req.voice not in voices:
-        raise HTTPException(404, f"Voice not found: {req.voice}. Available: {', '.join(voices.keys())}")
+    if req.voice in voices:
+        v = voices[req.voice]
+    elif voices:
+        v = next(iter(voices.values()))
+    else:
+        raise HTTPException(500, "No voices configured")
 
-    v = voices[req.voice]
     fmt = OPENAI_FMT_MAP.get(req.response_format, "ogg")
     mime = OPENAI_MIME_MAP.get(req.response_format, "audio/ogg")
     speed = req.speed or 1.0
