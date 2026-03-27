@@ -6,3 +6,5 @@ voices/*.wav
 voices/*.txt
 !voices/paul.wav
 !voices/paul.txt
+!voices/rebecca.wav
+!voices/rebecca.txt
