@@ -156,20 +156,134 @@ def _patch_f5tts():
 
     f5_utils.ThreadPoolExecutor = _SequentialExecutor
 
-    # --- Patch 2: Minimum generation duration ---
+    # --- Patch 2: Consistent speed across all text lengths ---
+    # F5-TTS overrides speed to 0.3 for texts < 10 bytes, causing
+    # inconsistent speech rate. We patch _infer_basic to always use the
+    # caller's speed, and enforce a minimum duration floor to prevent
+    # truncation on very short texts.
     _orig_infer_batch = f5_utils.infer_batch_process
 
-    def _patched_infer_batch(*args, speed=1, **kwargs):
-        # Slow down short texts so they aren't truncated.
-        # F5-TTS already does speed=0.3 for <10 bytes but that's not enough.
-        # We cap speed at 0.5 for anything under 100 bytes.
-        gen_text_batches = args[2] if len(args) > 2 else kwargs.get('gen_text_batches', [])
-        total_bytes = sum(len(t.encode('utf-8')) for t in gen_text_batches)
-        if total_bytes < 100:
-            speed = min(speed, 0.5)
-        return _orig_infer_batch(*args, speed=speed, **kwargs)
+    def _patched_infer_batch(*args, **kwargs):
+        return _orig_infer_batch(*args, **kwargs)
 
-    f5_utils.infer_batch_process = _patched_infer_batch
+    # Patch the inner function that overrides speed
+    import types
+    _orig_module_source = f5_utils.__name__
+
+    _real_infer_basic = None
+
+    def _patch_inner_speed():
+        """Remove speed=0.3 override and add minimum duration floor."""
+        import f5_tts.infer.utils_infer as mod
+        orig_ibp = mod.infer_batch_process
+
+        def patched_ibp(
+            ref_audio, ref_text, gen_text_batches, model_obj, vocoder,
+            mel_spec_type="vocos", progress=None, target_rms=0.1,
+            cross_fade_duration=0.15, nfe_step=32, cfg_strength=2.0,
+            sway_sampling_coef=-1, speed=1, fix_duration=None,
+            device=None, streaming=False, chunk_size=2048,
+        ):
+            import torchaudio
+            audio, sr = ref_audio
+            if audio.shape[0] > 1:
+                audio = torch.mean(audio, dim=0, keepdim=True)
+
+            rms = torch.sqrt(torch.mean(torch.square(audio)))
+            if rms < target_rms:
+                audio = audio * target_rms / rms
+            if sr != mod.target_sample_rate:
+                resampler = torchaudio.transforms.Resample(sr, mod.target_sample_rate)
+                audio = resampler(audio)
+            audio = audio.to(device)
+
+            generated_waves = []
+            spectrograms = []
+
+            if len(ref_text[-1].encode("utf-8")) == 1:
+                ref_text = ref_text + " "
+
+            hop_length = mod.hop_length
+            ref_audio_len = audio.shape[-1] // hop_length
+
+            def _infer_consistent(gen_text):
+                text_list = [ref_text + gen_text]
+                final_text_list = mod.convert_char_to_pinyin(text_list)
+
+                if fix_duration is not None:
+                    duration = int(fix_duration * mod.target_sample_rate / hop_length)
+                else:
+                    ref_text_len = len(ref_text.encode("utf-8"))
+                    gen_text_len = len(gen_text.encode("utf-8"))
+                    # Always use caller's speed — no override for short texts
+                    duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / speed)
+                    # Minimum 1.5s of generated audio to prevent truncation
+                    min_gen_frames = int(1.5 * mod.target_sample_rate / hop_length)
+                    if (duration - ref_audio_len) < min_gen_frames:
+                        duration = ref_audio_len + min_gen_frames
+
+                with torch.inference_mode():
+                    generated, _ = model_obj.sample(
+                        cond=audio,
+                        text=final_text_list,
+                        duration=duration,
+                        steps=nfe_step,
+                        cfg_strength=cfg_strength,
+                        sway_sampling_coef=sway_sampling_coef,
+                    )
+                    del _
+                    generated = generated.to(torch.float32)
+                    generated = generated[:, ref_audio_len:, :]
+                    generated = generated.permute(0, 2, 1)
+                    if mel_spec_type == "vocos":
+                        generated_wave = vocoder.decode(generated)
+                    elif mel_spec_type == "bigvgan":
+                        generated_wave = vocoder(generated)
+                    if rms < target_rms:
+                        generated_wave = generated_wave * rms / target_rms
+                    generated_wave = generated_wave.squeeze().cpu().numpy()
+
+                generated_cpu = generated[0].cpu().numpy()
+                del generated
+                return generated_wave, generated_cpu
+
+            if streaming:
+                for gen_text in (progress.tqdm(gen_text_batches) if progress else gen_text_batches):
+                    wave, _ = _infer_consistent(gen_text)
+                    for j in range(0, len(wave), chunk_size):
+                        yield wave[j:j+chunk_size], mod.target_sample_rate
+            else:
+                for gen_text in (progress.tqdm(gen_text_batches) if progress else gen_text_batches):
+                    generated_wave, generated_mel_spec = _infer_consistent(gen_text)
+                    generated_waves.append(generated_wave)
+                    spectrograms.append(generated_mel_spec)
+
+                if generated_waves:
+                    if cross_fade_duration <= 0:
+                        final_wave = np.concatenate(generated_waves)
+                    else:
+                        final_wave = generated_waves[0]
+                        for i in range(1, len(generated_waves)):
+                            prev_wave = final_wave
+                            next_wave = generated_waves[i]
+                            cross_fade_samples = int(cross_fade_duration * mod.target_sample_rate)
+                            cross_fade_samples = min(cross_fade_samples, len(prev_wave), len(next_wave))
+                            if cross_fade_samples <= 0:
+                                final_wave = np.concatenate([prev_wave, next_wave])
+                                continue
+                            fade_out = np.linspace(1, 0, cross_fade_samples)
+                            fade_in = np.linspace(0, 1, cross_fade_samples)
+                            cross_faded = prev_wave[-cross_fade_samples:] * fade_out + next_wave[:cross_fade_samples] * fade_in
+                            final_wave = np.concatenate([prev_wave[:-cross_fade_samples], cross_faded, next_wave[cross_fade_samples:]])
+
+                    combined_spectrogram = np.concatenate(spectrograms, axis=1)
+                    yield final_wave, mod.target_sample_rate, combined_spectrogram
+                else:
+                    yield None, mod.target_sample_rate, None
+
+        mod.infer_batch_process = patched_ibp
+
+    _patch_inner_speed()
 
 _patch_f5tts()
 
