@@ -61,13 +61,7 @@ PyTorch CUDA images are x86-only, so arm64 CUDA builds must be done locally usin
 
 ```bash
 docker build -f Dockerfile.spark -t clone-voice:spark .
-docker run --rm -d --runtime nvidia --gpus all \
-  --name clone-voice --network host \
-  -v ./voices:/app/voices \
-  -v ./config.yaml:/app/config.yaml \
-  -v hf-cache:/root/.cache/huggingface \
-  -v whisper-cache:/root/.cache/whisper \
-  clone-voice:spark
+./run.sh
 ```
 
 ## Usage
