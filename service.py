@@ -669,8 +669,8 @@ async def health():
     return {
         "status": "ok",
         "device": DEVICE,
-        "tts_loaded": _tts_model is not None,
-        "stt_loaded": _stt_model is not None,
+        "tts_warm": _tts_model is not None,
+        "stt_warm": _stt_model is not None,
         "stt_backend": CONFIG.get("stt", {}).get("backend", "whisper"),
     }
 
