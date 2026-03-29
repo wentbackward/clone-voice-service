@@ -22,6 +22,7 @@ tts:
 
 # STT settings
 stt:
+  backend: "whisper"      # "whisper" (openai-whisper) or "faster-whisper"
   model: "turbo"          # whisper model: tiny, base, small, medium, large, turbo
   language: null          # null for auto-detect, or "en", "fr", etc.
   defaults:

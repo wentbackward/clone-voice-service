@@ -2,9 +2,10 @@
 """
 Clone Voice Service — TTS (F5-TTS) + STT (Whisper) in a single API.
 
-  POST /tts               — text + voice → audio
-  POST /v1/audio/speech   — OpenAI-compatible TTS endpoint
-  POST /stt               — audio → text
+  POST /tts                      — text + voice → audio
+  POST /v1/audio/speech          — OpenAI-compatible TTS endpoint
+  POST /stt                      — audio → text
+  POST /v1/audio/transcriptions  — OpenAI-compatible STT endpoint
   GET  /voices
   GET  /health
 """
@@ -81,17 +82,83 @@ def get_tts_model():
     return _tts_model
 
 
+class WhisperBackend:
+    """Wraps openai-whisper."""
+
+    def __init__(self, model_name: str, device: str):
+        import whisper
+        self.model = whisper.load_model(model_name, device=device)
+        self.name = "whisper"
+
+    def transcribe(self, audio_path: str, *, language: str | None = None,
+                   prompt: str | None = None, temperature: float | None = None) -> dict:
+        opts: dict = {}
+        if language:
+            opts["language"] = language
+        if prompt:
+            opts["initial_prompt"] = prompt
+        if temperature is not None:
+            opts["temperature"] = temperature
+        result = self.model.transcribe(audio_path, **opts)
+        segments = result.get("segments", [])
+        return {
+            "text": result["text"].strip(),
+            "language": result.get("language"),
+            "duration": segments[-1]["end"] if segments else None,
+            "segments": [
+                {"start": s["start"], "end": s["end"], "text": s["text"].strip()}
+                for s in segments
+            ],
+        }
+
+
+class FasterWhisperBackend:
+    """Wraps faster-whisper (CTranslate2). ~4x faster than openai-whisper."""
+
+    MODEL_MAP = {"turbo": "large-v3-turbo", "large": "large-v3"}
+
+    def __init__(self, model_name: str, device: str):
+        from faster_whisper import WhisperModel
+        mapped = self.MODEL_MAP.get(model_name, model_name)
+        compute_type = "float16" if device == "cuda" else "int8"
+        self.model = WhisperModel(mapped, device=device, compute_type=compute_type)
+        self.name = "faster-whisper"
+
+    def transcribe(self, audio_path: str, *, language: str | None = None,
+                   prompt: str | None = None, temperature: float | None = None) -> dict:
+        opts: dict = {}
+        if language:
+            opts["language"] = language
+        if prompt:
+            opts["initial_prompt"] = prompt
+        if temperature is not None:
+            opts["temperature"] = temperature
+        segments_gen, info = self.model.transcribe(audio_path, **opts)
+        segments = [
+            {"start": s.start, "end": s.end, "text": s.text.strip()}
+            for s in segments_gen
+        ]
+        return {
+            "text": " ".join(s["text"] for s in segments),
+            "language": info.language,
+            "duration": info.duration,
+            "segments": segments,
+        }
+
+
 def get_stt_model():
     global _stt_model
     if _stt_model is None:
         with _stt_lock:
             if _stt_model is None:
-                import whisper
                 stt_cfg = CONFIG.get("stt", {})
-                _stt_model = whisper.load_model(
-                    stt_cfg.get("model", "turbo"),
-                    device=DEVICE,
-                )
+                backend = stt_cfg.get("backend", "whisper")
+                model_name = stt_cfg.get("model", "turbo")
+                if backend == "faster-whisper":
+                    _stt_model = FasterWhisperBackend(model_name, DEVICE)
+                else:
+                    _stt_model = WhisperBackend(model_name, DEVICE)
+                log.info(f"STT backend: {_stt_model.name}, model: {model_name}")
     return _stt_model
 
 
@@ -408,7 +475,7 @@ async def openai_tts(req: OpenAISpeechRequest):
         v = voices[matched]
     else:
         raise HTTPException(500, "No voices configured")
-    log.info(f"openai-tts voice={req.voice!r} → {matched!r}, fmt={req.response_format!r}, len={len(req.input)}")
+    log.info(f"openai-tts voice={req.voice!r} → {matched!r}, fmt={req.response_format!r}, speed={req.speed!r}, len={len(req.input)}")
 
     fmt = OPENAI_FMT_MAP.get(req.response_format, "ogg")
     mime = OPENAI_MIME_MAP.get(req.response_format, "audio/ogg")
@@ -427,6 +494,46 @@ async def openai_tts(req: OpenAISpeechRequest):
 
 
 # ---------------------------------------------------------------------------
+# STT — shared helpers
+# ---------------------------------------------------------------------------
+def _guess_ext(filename: str | None) -> str:
+    if filename:
+        ext = Path(filename).suffix
+        if ext:
+            return ext
+    return ".wav"
+
+
+def _convert_audio_to_wav(audio_data: bytes, filename: str | None = None) -> str:
+    """Convert audio bytes to 16kHz mono WAV. Returns temp file path (caller must delete)."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    with tempfile.NamedTemporaryFile(suffix=_guess_ext(filename)) as inp:
+        inp.write(audio_data)
+        inp.flush()
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", inp.name, "-ar", "16000", "-ac", "1",
+             "-c:a", "pcm_s16le", tmp_path],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            os.unlink(tmp_path)
+            raise HTTPException(400, f"Could not decode audio: {result.stderr.decode()[-200:]}")
+    return tmp_path
+
+
+def _run_stt(audio_path: str, *, language: str | None = None,
+             prompt: str | None = None, temperature: float | None = None) -> dict:
+    """Run STT inference (must be called from a thread, not the event loop)."""
+    with _stt_infer_lock:
+        backend = get_stt_model()
+        return backend.transcribe(
+            audio_path, language=language, prompt=prompt, temperature=temperature,
+        )
+
+
+# ---------------------------------------------------------------------------
 # STT
 # ---------------------------------------------------------------------------
 @app.post("/stt")
@@ -441,63 +548,112 @@ async def speech_to_text(
     lang = language or CONFIG.get("stt", {}).get("language")
 
     audio_data = await audio.read()
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = tmp.name
-        # Convert to wav with ffmpeg to handle any input format
-        with tempfile.NamedTemporaryFile(suffix=_guess_ext(audio.filename)) as inp:
-            inp.write(audio_data)
-            inp.flush()
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", inp.name, "-ar", "16000", "-ac", "1",
-                 "-c:a", "pcm_s16le", tmp_path],
-                capture_output=True, timeout=30,
-            )
-            if result.returncode != 0:
-                os.unlink(tmp_path)
-                raise HTTPException(400, f"Could not decode audio: {result.stderr.decode()[-200:]}")
+    tmp_path = _convert_audio_to_wav(audio_data, audio.filename)
 
     try:
-        def _transcribe():
-            with _stt_infer_lock:
-                model = get_stt_model()
-                opts = {}
-                if lang:
-                    opts["language"] = lang
-                return model.transcribe(tmp_path, **opts)
-
-        result = await asyncio.to_thread(_transcribe)
+        result = await asyncio.to_thread(_run_stt, tmp_path, language=lang)
     finally:
         os.unlink(tmp_path)
 
     if fmt == "text":
-        return Response(content=result["text"].strip(), media_type="text/plain")
+        return Response(content=result["text"], media_type="text/plain")
     elif fmt == "verbose":
         return JSONResponse({
-            "text": result["text"].strip(),
+            "text": result["text"],
             "language": result.get("language"),
-            "segments": [
-                {
-                    "start": s["start"],
-                    "end": s["end"],
-                    "text": s["text"].strip(),
-                }
-                for s in result.get("segments", [])
-            ],
+            "segments": result.get("segments", []),
         })
     else:
         return JSONResponse({
-            "text": result["text"].strip(),
+            "text": result["text"],
             "language": result.get("language"),
         })
 
 
-def _guess_ext(filename: str | None) -> str:
-    if filename:
-        ext = Path(filename).suffix
-        if ext:
-            return ext
-    return ".wav"
+# ---------------------------------------------------------------------------
+# OpenAI-compatible STT  (POST /v1/audio/transcriptions)
+# ---------------------------------------------------------------------------
+def _format_timestamp_srt(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _format_timestamp_vtt(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+@app.post("/v1/audio/transcriptions")
+async def openai_transcriptions(
+    file: UploadFile = File(...),
+    model: str = Form(default="whisper-1"),
+    language: Optional[str] = Form(default=None),
+    prompt: Optional[str] = Form(default=None),
+    response_format: Optional[str] = Form(default="json"),
+    temperature: Optional[float] = Form(default=None),
+):
+    import asyncio
+
+    lang = language or CONFIG.get("stt", {}).get("language")
+    log.info(f"openai-stt model={model!r}, fmt={response_format!r}, lang={lang!r}, len={file.size}")
+
+    audio_data = await file.read()
+    tmp_path = _convert_audio_to_wav(audio_data, file.filename)
+
+    try:
+        result = await asyncio.to_thread(
+            _run_stt, tmp_path, language=lang, prompt=prompt, temperature=temperature,
+        )
+    finally:
+        os.unlink(tmp_path)
+
+    segments = result.get("segments", [])
+
+    if response_format == "text":
+        return Response(content=result["text"], media_type="text/plain")
+
+    elif response_format == "verbose_json":
+        return JSONResponse({
+            "task": "transcribe",
+            "language": result.get("language"),
+            "duration": result.get("duration"),
+            "text": result["text"],
+            "segments": [
+                {
+                    "id": i,
+                    "start": s["start"],
+                    "end": s["end"],
+                    "text": s["text"],
+                }
+                for i, s in enumerate(segments)
+            ],
+        })
+
+    elif response_format == "srt":
+        lines = []
+        for i, s in enumerate(segments, 1):
+            lines.append(str(i))
+            lines.append(f"{_format_timestamp_srt(s['start'])} --> {_format_timestamp_srt(s['end'])}")
+            lines.append(s["text"])
+            lines.append("")
+        return Response(content="\n".join(lines), media_type="text/plain")
+
+    elif response_format == "vtt":
+        lines = ["WEBVTT", ""]
+        for s in segments:
+            lines.append(f"{_format_timestamp_vtt(s['start'])} --> {_format_timestamp_vtt(s['end'])}")
+            lines.append(s["text"])
+            lines.append("")
+        return Response(content="\n".join(lines), media_type="text/plain")
+
+    else:  # "json" (default)
+        return JSONResponse({"text": result["text"]})
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +671,7 @@ async def health():
         "device": DEVICE,
         "tts_loaded": _tts_model is not None,
         "stt_loaded": _stt_model is not None,
+        "stt_backend": CONFIG.get("stt", {}).get("backend", "whisper"),
     }
 
 

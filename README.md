@@ -83,6 +83,19 @@ curl -X POST http://localhost:3030/stt \
   -F "format=text"
 ```
 
+### OpenAI-Compatible STT
+
+Drop-in replacement for the OpenAI transcription API:
+
+```bash
+curl -X POST http://localhost:3030/v1/audio/transcriptions \
+  -F "file=@recording.ogg" \
+  -F "model=whisper-1" \
+  -F "response_format=text"
+```
+
+Supports `json`, `text`, `verbose_json`, `srt`, and `vtt` response formats.
+
 ### List Voices
 
 ```bash
@@ -158,11 +171,14 @@ tts:
     cfg_strength: 2.0
 
 stt:
+  backend: "whisper"    # "whisper" (openai-whisper) or "faster-whisper"
   model: "turbo"        # tiny, base, small, medium, large, turbo
   language: null        # null = auto-detect
   defaults:
     format: "json"      # "json", "text", "verbose"
 ```
+
+The `faster-whisper` backend uses CTranslate2 and is ~4x faster than openai-whisper. To enable it, set `stt.backend: "faster-whisper"` in `config.yaml`.
 
 ### CPU-Only Deployment
 

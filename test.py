@@ -123,6 +123,67 @@ def t_stt_verbose():
     print(f"OK ({len(data['segments'])} segments)")
 test("stt_verbose", t_stt_verbose)
 
+# OpenAI STT — json
+print("POST /v1/audio/transcriptions (json) ... ", end="", flush=True)
+def t_oai_stt_json():
+    start = time.time()
+    with open("/tmp/test_tts.ogg", "rb") as f:
+        r = requests.post(f"{HOST}/v1/audio/transcriptions",
+                          files={"file": f}, data={"model": "whisper-1"})
+    elapsed = time.time() - start
+    assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:100]}"
+    data = r.json()
+    assert "text" in data
+    print(f"OK ({elapsed:.1f}s) \"{data['text'][:60]}\"")
+test("oai_stt_json", t_oai_stt_json)
+
+# OpenAI STT — text
+print("POST /v1/audio/transcriptions (text) ... ", end="", flush=True)
+def t_oai_stt_text():
+    with open("/tmp/test_tts.ogg", "rb") as f:
+        r = requests.post(f"{HOST}/v1/audio/transcriptions",
+                          files={"file": f}, data={"response_format": "text"})
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    assert r.headers["content-type"].startswith("text/plain")
+    print(f"OK \"{r.text[:60]}\"")
+test("oai_stt_text", t_oai_stt_text)
+
+# OpenAI STT — verbose_json
+print("POST /v1/audio/transcriptions (verbose_json) ... ", end="", flush=True)
+def t_oai_stt_verbose():
+    with open("/tmp/test_tts.ogg", "rb") as f:
+        r = requests.post(f"{HOST}/v1/audio/transcriptions",
+                          files={"file": f}, data={"response_format": "verbose_json"})
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    data = r.json()
+    assert "segments" in data
+    assert "duration" in data
+    assert data.get("task") == "transcribe"
+    print(f"OK ({len(data['segments'])} segments, {data['duration']:.1f}s)")
+test("oai_stt_verbose", t_oai_stt_verbose)
+
+# OpenAI STT — srt
+print("POST /v1/audio/transcriptions (srt) ... ", end="", flush=True)
+def t_oai_stt_srt():
+    with open("/tmp/test_tts.ogg", "rb") as f:
+        r = requests.post(f"{HOST}/v1/audio/transcriptions",
+                          files={"file": f}, data={"response_format": "srt"})
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    assert "-->" in r.text
+    print(f"OK ({len(r.text)} chars)")
+test("oai_stt_srt", t_oai_stt_srt)
+
+# OpenAI STT — vtt
+print("POST /v1/audio/transcriptions (vtt) ... ", end="", flush=True)
+def t_oai_stt_vtt():
+    with open("/tmp/test_tts.ogg", "rb") as f:
+        r = requests.post(f"{HOST}/v1/audio/transcriptions",
+                          files={"file": f}, data={"response_format": "vtt"})
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    assert r.text.startswith("WEBVTT")
+    print(f"OK ({len(r.text)} chars)")
+test("oai_stt_vtt", t_oai_stt_vtt)
+
 # Summary
 print()
 print("=" * 50)

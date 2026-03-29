@@ -55,6 +55,24 @@ GET http://spark-01:3030/voices
 
 Fetch available voices before generating audio. Returns JSON keyed by voice name.
 
+### OpenAI-Compatible STT
+
+```
+POST http://spark-01:3030/v1/audio/transcriptions
+Content-Type: multipart/form-data
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `file` | file | *required* | Audio file (any format) |
+| `model` | string | `"whisper-1"` | Accepted but ignored (uses configured backend) |
+| `language` | string | auto-detect | Language code: `"en"`, `"fr"`, `"de"`, etc. |
+| `prompt` | string | none | Optional context to improve accuracy |
+| `response_format` | string | `"json"` | `"json"`, `"text"`, `"verbose_json"`, `"srt"`, `"vtt"` |
+| `temperature` | float | none | Sampling temperature |
+
+Compatible with any OpenAI STT client — set `baseUrl` to `http://spark-01:3030/v1`.
+
 ### OpenAI-Compatible TTS
 
 ```
