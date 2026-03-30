@@ -273,6 +273,18 @@ def _patch_f5tts():
             hop_length = mod.hop_length
             ref_audio_len = audio.shape[-1] // hop_length
 
+            # Consistent frames-per-word rate from the reference audio.
+            # Each chunk gets duration proportional to its word count
+            # (not byte length) so code/URLs don't distort pacing.
+            ref_words = max(len(ref_text.split()), 1)
+            frames_per_word = ref_audio_len / ref_words  # reference pace
+
+            # Padding: extra frames at the end of each chunk so the
+            # cross-fade doesn't eat into the last spoken word.
+            pad_frames = int(0.3 * mod.target_sample_rate / hop_length)
+
+            min_gen_frames = int(1.5 * mod.target_sample_rate / hop_length)
+
             def _infer_consistent(gen_text):
                 text_list = [ref_text + gen_text]
                 final_text_list = mod.convert_char_to_pinyin(text_list)
@@ -280,15 +292,10 @@ def _patch_f5tts():
                 if fix_duration is not None:
                     duration = int(fix_duration * mod.target_sample_rate / hop_length)
                 else:
-                    # Use word count for duration — byte length is unreliable
-                    # for text containing code, URLs, JSON, or punctuation
-                    ref_words = max(len(ref_text.split()), 1)
                     gen_words = max(len(gen_text.split()), 1)
-                    duration = ref_audio_len + int(ref_audio_len / ref_words * gen_words / speed)
-                    # Minimum 1.5s of generated audio to prevent truncation
-                    min_gen_frames = int(1.5 * mod.target_sample_rate / hop_length)
-                    if (duration - ref_audio_len) < min_gen_frames:
-                        duration = ref_audio_len + min_gen_frames
+                    gen_frames = int(frames_per_word * gen_words / speed) + pad_frames
+                    gen_frames = max(gen_frames, min_gen_frames)
+                    duration = ref_audio_len + gen_frames
 
                 with torch.inference_mode():
                     generated, _ = model_obj.sample(
